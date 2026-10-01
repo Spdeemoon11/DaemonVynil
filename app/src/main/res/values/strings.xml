@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Vinyl Application String Resources
+    Contains all user-facing strings, accessibility content descriptions,
+    state labels, and explanatory dialog copy for media detection.
+    Every string is heavily documented for clarity and maintainability.
+-->
+<resources>
+    <!-- Application name displayed on launcher and title areas -->
+    <string name="app_name">Vinyl</string>
+
+    <!-- Notification listener service description for Android system settings -->
+    <string name="notification_listener_service_label">Vinyl Media Bridge</string>
+    <string name="notification_listener_service_description">Enables Vinyl to detect active music playback, song titles, artists, and album artwork from your media players.</string>
+
+    <!-- Playback control accessibility descriptions -->
+    <string name="cd_play">Play</string>
+    <string name="cd_pause">Pause</string>
+    <string name="cd_skip_next">Skip to next track</string>
+    <string name="cd_skip_previous">Skip to previous track</string>
+    <string name="cd_vinyl_record">Vinyl record rotating to current playback</string>
+    <string name="cd_album_art">Center label album artwork</string>
+    <string name="cd_seek_scrubber">Track progress scrubber</string>
+    <string name="cd_open_settings">Open device media access settings</string>
+    <string name="cd_needle_arm">Tone arm indicating playback state</string>
+    <string name="cd_speed_toggle">Toggle vinyl rotation speed between 33 and 45 RPM</string>
+
+    <!-- Empty and standby playback states -->
+    <string name="empty_playback_title">Nothing Playing</string>
+    <string name="empty_playback_subtitle">Start playback on your device.</string>
+    <string name="empty_playback_hint">Spotify, Apple Music, YouTube Music, Tidal, or any media player</string>
+
+    <!-- Fallback metadata values when tag is absent or incomplete -->
+    <string name="unknown_track">Unknown Track</string>
+    <string name="unknown_artist">Unknown Artist</string>
+    <string name="unknown_album">Unknown Album</string>
+
+    <!-- Permission and setup guidance banner/dialog -->
+    <string name="media_access_prompt_title">Media Access Required</string>
+    <string name="media_access_prompt_body">To detect the currently playing record and its album artwork, Android requires Notification / Media Session access.</string>
+    <string name="media_access_prompt_button">Grant Access</string>
+    <string name="media_access_dismiss">Later</string>
+
+    <!-- Physical status readouts -->
+    <string name="rpm_33">33 ⅓ RPM</string>
+    <string name="rpm_45">45 RPM</string>
+    <string name="status_stereo">STEREO HI-FI</string>
+    <string name="status_analog">ANALOG GROOVE</string>
+    <string name="time_default">0:00</string>
+</resources>

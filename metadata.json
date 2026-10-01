@@ -1,0 +1,6 @@
+{
+  "name": "Vinyl",
+  "description": "Skeuomorphic vinyl music visualizer detecting active device media playback",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

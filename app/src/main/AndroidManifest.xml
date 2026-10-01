@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Vinyl Android Manifest
+    Configures app components, essential permissions, and the system notification listener service
+    required to capture Android MediaSession updates from streaming and local music players.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Normal install-time permissions:
+         - INTERNET: Required by Coil to load remote album artwork URLs supplied by media sessions
+         - VIBRATE: Required to provide tactile haptic feedback for physical machined switches
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MyApplication">
+
+        <!-- Main full-bleed activity showcasing the skeuomorphic vinyl record player -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:windowSoftInputMode="adjustNothing"
+            android:theme="@style/Theme.MyApplication">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- NotificationListenerService:
+             Android security model requires a NotificationListenerService to receive
+             active MediaSession tokens and callbacks from third-party media players
+             such as Spotify, YouTube Music, Apple Music, Audible, and local audio players.
+        -->
+        <service
+            android:name=".media.VinylNotificationListenerService"
+            android:label="@string/notification_listener_service_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+    </application>
+
+</manifest>
