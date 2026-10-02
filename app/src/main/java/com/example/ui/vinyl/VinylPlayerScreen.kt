@@ -3,8 +3,11 @@ package com.example.ui.vinyl
 import android.content.Context
 import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,6 +48,7 @@ import com.example.R
 import com.example.media.AlbumColorPalette
 import com.example.media.rememberResolvedArtwork
 import com.example.media.rememberResolvedPalette
+import com.example.ui.theme.EditorialDisplayFontFamily
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.delay
@@ -103,22 +107,7 @@ fun VinylPlayerScreen(
         artist = nowPlayingState.artist
     )
 
-    // Smooth real-time playback position interpolation (updates at 10Hz for progress synchronization)
-    var interpolatedPositionMs by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(nowPlayingState.isPlaying, nowPlayingState.positionMs, nowPlayingState.lastPositionUpdateTime) {
-        while (isActive) {
-            interpolatedPositionMs = nowPlayingState.calculateCurrentPositionMs()
-            delay(100L)
-        }
-    }
-
-    val displayPositionMs = optimisticSeekPos ?: interpolatedPositionMs
     val displayDurationMs = nowPlayingState.durationMs
-    val playbackProgress = if (displayDurationMs > 0L) {
-        (displayPositionMs.toFloat() / displayDurationMs.toFloat()).coerceIn(0.0f, 1.0f)
-    } else {
-        0.0f
-    }
 
     BoxWithConstraints(
         modifier = modifier.fillMaxSize(),
@@ -135,6 +124,7 @@ fun VinylPlayerScreen(
             palette = palette,
             tiltX = tilt.first,
             tiltY = tilt.second,
+            tiltProvider = { tilt },
             modifier = Modifier.fillMaxSize()
         )
 
@@ -166,13 +156,9 @@ fun VinylPlayerScreen(
                         trackTitle = nowPlayingState.title,
                         trackArtist = nowPlayingState.artist,
                         hasActiveTrack = !nowPlayingState.isEmpty,
-                        playbackProgress = playbackProgress,
+                        durationMs = displayDurationMs,
                         palette = palette,
-                        onSeekFraction = { frac ->
-                            if (displayDurationMs > 0L) {
-                                viewModel.onSeekRequested((frac * displayDurationMs).toLong())
-                            }
-                        },
+                        onSeekRequested = { pos -> viewModel.onSeekRequested(pos) },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -266,7 +252,7 @@ fun VinylPlayerScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1.35f, fill = true)
+                        .weight(1.50f, fill = true)
                         .testTag("vinyl_turntable_container"),
                     contentAlignment = Alignment.Center
                 ) {
@@ -276,13 +262,9 @@ fun VinylPlayerScreen(
                         trackTitle = nowPlayingState.title,
                         trackArtist = nowPlayingState.artist,
                         hasActiveTrack = !nowPlayingState.isEmpty,
-                        playbackProgress = playbackProgress,
+                        durationMs = displayDurationMs,
                         palette = palette,
-                        onSeekFraction = { frac ->
-                            if (displayDurationMs > 0L) {
-                                viewModel.onSeekRequested((frac * displayDurationMs).toLong())
-                            }
-                        },
+                        onSeekRequested = { pos -> viewModel.onSeekRequested(pos) },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -297,10 +279,10 @@ fun VinylPlayerScreen(
                     album = nowPlayingState.album,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 28.dp, vertical = 10.dp)
+                        .padding(horizontal = 24.dp, vertical = 4.dp)
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(2.dp))
 
                 // -------------------------------------------------
                 // 4. Tactile Pill Controls (matching reference)
@@ -321,7 +303,7 @@ fun VinylPlayerScreen(
                     palette = palette,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 20.dp)
+                        .padding(bottom = 16.dp)
                 )
             }
         }
@@ -343,25 +325,41 @@ private fun TurntableDeckView(
     trackTitle: String,
     trackArtist: String,
     hasActiveTrack: Boolean,
-    playbackProgress: Float,
+    durationMs: Long,
     palette: AlbumColorPalette,
-    onSeekFraction: (Float) -> Unit,
+    onSeekRequested: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // -------------------------------------------------------------
-    // Section: State Observations
-    // Collect rotation state without triggering composition-phase invalidations.
-    // -------------------------------------------------------------
-    val currentAngleState = viewModel.currentAngle.collectAsStateWithLifecycle()
     val tilt by viewModel.tiltState.collectAsStateWithLifecycle()
+    val swipeDirection by viewModel.swipeDirection.collectAsStateWithLifecycle()
+    val swipeTrigger by viewModel.swipeTrigger.collectAsStateWithLifecycle()
+    val nowPlayingState by viewModel.nowPlayingState.collectAsStateWithLifecycle()
+    val optimisticSeekPos by viewModel.optimisticSeekPositionMs.collectAsStateWithLifecycle()
+
+    // Smooth real-time playback position interpolation localized to TurntableDeckView
+    var interpolatedPositionMs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(nowPlayingState.isPlaying, nowPlayingState.positionMs, nowPlayingState.lastPositionUpdateTime) {
+        while (isActive) {
+            interpolatedPositionMs = nowPlayingState.calculateCurrentPositionMs()
+            delay(100L)
+        }
+    }
+
+    val displayPositionMs = optimisticSeekPos ?: interpolatedPositionMs
+    val playbackProgress = if (durationMs > 0L) {
+        (displayPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0.0f, 1.0f)
+    } else {
+        0.0f
+    }
 
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         // ---------------------------------------------------------
         // Section: Rotating Vinyl Disc & Circular Progress Ring
         // Positioned toward left/center, GPU RenderNode rotation via graphicsLayer
+        // Supports physical touch-to-pause and swipe-to-change-track gestures
         // ---------------------------------------------------------
         TurntableCanvas(
-            currentAngleProvider = { currentAngleState.value },
+            currentAngleProvider = { viewModel.rotationAngle.floatValue },
             playbackProgress = playbackProgress,
             tiltX = tilt.first,
             tiltY = tilt.second,
@@ -369,7 +367,18 @@ private fun TurntableDeckView(
             trackTitle = trackTitle,
             trackArtist = trackArtist,
             palette = palette,
-            onSeekFraction = onSeekFraction,
+            onSeekFraction = { frac ->
+                if (durationMs > 0L) {
+                    onSeekRequested((frac * durationMs).toLong())
+                }
+            },
+            onVinylTap = { viewModel.onVinylTapped() },
+            onVinylSwipeUp = { viewModel.onVinylSwipeUp() },
+            onVinylSwipeDown = { viewModel.onVinylSwipeDown() },
+            onPlatterMove = { velocity -> viewModel.onPlatterMoved(velocity) },
+            onPlatterTouchEnd = { viewModel.onPlatterTouchEnded() },
+            swipeDirection = swipeDirection,
+            swipeTrigger = swipeTrigger,
             modifier = Modifier.fillMaxSize()
         )
 
@@ -384,18 +393,69 @@ private fun TurntableDeckView(
             tiltX = tilt.first,
             tiltY = tilt.second,
             palette = palette,
-            onSeekFraction = onSeekFraction,
+            onSeekFraction = { frac ->
+                if (durationMs > 0L) {
+                    onSeekRequested((frac * durationMs).toLong())
+                }
+            },
             modifier = Modifier.fillMaxSize()
         )
     }
 }
 
 /**
+ * Cleans a raw media-session track title for UI presentation by completely removing
+ * any text contained within parentheses, including multiple and nested parentheses,
+ * collapsing redundant whitespace, and trimming dangling punctuation.
+ *
+ * Examples:
+ * - "Jaana Samjho Na (From Bhool Bhulaiyaa 3)" -> "Jaana Samjho Na"
+ * - "Song Name (Official Audio) (Remastered)" -> "Song Name"
+ * - "Track Name (Live) (2025 Edition)" -> "Track Name"
+ * - "Song Name (feat. Artist (Remix))" -> "Song Name"
+ */
+internal fun cleanDisplayTrackTitle(rawTitle: String): String {
+    if (rawTitle.isEmpty()) return rawTitle
+
+    val sb = StringBuilder(rawTitle.length)
+    var parenDepth = 0
+
+    for (ch in rawTitle) {
+        when (ch) {
+            '(' -> parenDepth++
+            ')' -> {
+                if (parenDepth > 0) parenDepth--
+            }
+            else -> {
+                if (parenDepth == 0) {
+                    sb.append(ch)
+                }
+            }
+        }
+    }
+
+    // Collapse multiple consecutive spaces and trim leading/trailing whitespace
+    var cleaned = sb.toString().replace(Regex("\\s+"), " ").trim()
+
+    // Clean up any dangling trailing punctuation caused by removing a parenthetical suffix
+    // e.g. "Track Name - (Remastered)" -> "Track Name - " -> "Track Name"
+    cleaned = cleaned.trimEnd(' ', '-', '–', '—', ':', ',', ';', '/', '\\').trim()
+
+    return if (cleaned.isNotEmpty()) {
+        cleaned
+    } else {
+        // If the entire title was inside parentheses, e.g. "(Untitled)", strip parens
+        rawTitle.replace("(", "").replace(")", "").trim()
+    }
+}
+
+/**
  * Track title, artist, and secondary typography cluster.
  * Left-aligned below the vinyl record, strictly adhering to the requested hierarchy:
- * Track title = largest (28.sp)
- * Artist = medium (18.sp)
- * Secondary metadata = smallest (13.sp)
+ * Track title = MASSIVE, distinctive editorial font inspired by TAN Nimbus (58.sp)
+ * Artist = smaller, restrained font (16.sp)
+ * Secondary metadata = smallest (12.sp)
+ * Animated with a subtle, premium fade/slide transition without excessive bounce.
  */
 @Composable
 private fun TrackMetadataTypography(
@@ -404,45 +464,55 @@ private fun TrackMetadataTypography(
     album: String,
     modifier: Modifier = Modifier
 ) {
+    // Pure presentation-layer cleaning: removes all parenthetical suffixes (e.g. (From Movie), (Official Audio))
+    val displayTitle = remember(title) { cleanDisplayTrackTitle(title) }
+
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.Start,
-        verticalArrangement = Arrangement.spacedBy(3.dp)
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Track title = largest
+        // Track title = large, distinctive editorial font (~2x visual size: 58.sp)
         AnimatedContent(
-            targetState = title.ifEmpty { stringResource(R.string.empty_playback_title) },
-            transitionSpec = { fadeIn() togetherWith fadeOut() },
+            targetState = displayTitle.ifEmpty { stringResource(R.string.empty_playback_title) },
+            transitionSpec = {
+                (fadeIn(animationSpec = tween(280)) + slideInVertically(animationSpec = tween(280)) { it / 5 }) togetherWith
+                (fadeOut(animationSpec = tween(200)) + slideOutVertically(animationSpec = tween(200)) { -it / 5 })
+            },
             label = "TrackTitleTransition"
         ) { targetTitle ->
             Text(
                 text = targetTitle,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.SansSerif,
+                fontSize = 58.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = EditorialDisplayFontFamily,
                 color = TextPrimary,
-                lineHeight = 34.sp,
-                letterSpacing = (-0.2).sp,
+                lineHeight = 60.sp,
+                letterSpacing = (-1.0).sp,
                 textAlign = TextAlign.Start,
-                maxLines = 1,
+                maxLines = 2,
+                softWrap = true,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.testTag("track_title_text")
             )
         }
 
-        // Artist = medium
+        // Artist = smaller, restrained font
         AnimatedContent(
             targetState = artist.ifEmpty { stringResource(R.string.empty_playback_subtitle) },
-            transitionSpec = { fadeIn() togetherWith fadeOut() },
+            transitionSpec = {
+                (fadeIn(animationSpec = tween(280)) + slideInVertically(animationSpec = tween(280)) { it / 5 }) togetherWith
+                (fadeOut(animationSpec = tween(200)) + slideOutVertically(animationSpec = tween(200)) { -it / 5 })
+            },
             label = "TrackArtistTransition"
         ) { targetArtist ->
             Text(
                 text = targetArtist,
-                fontSize = 18.sp,
+                fontSize = 16.sp,
                 fontWeight = FontWeight.Medium,
                 fontFamily = FontFamily.SansSerif,
                 color = TextSecondary,
-                lineHeight = 24.sp,
+                lineHeight = 22.sp,
                 letterSpacing = 0.1.sp,
                 textAlign = TextAlign.Start,
                 maxLines = 1,
@@ -455,16 +525,19 @@ private fun TrackMetadataTypography(
         if (album.isNotEmpty() && album != artist) {
             AnimatedContent(
                 targetState = album,
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                transitionSpec = {
+                    (fadeIn(animationSpec = tween(280)) + slideInVertically(animationSpec = tween(280)) { it / 5 }) togetherWith
+                    (fadeOut(animationSpec = tween(200)) + slideOutVertically(animationSpec = tween(200)) { -it / 5 })
+                },
                 label = "TrackAlbumTransition"
             ) { targetAlbum ->
                 Text(
                     text = targetAlbum,
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Normal,
                     fontFamily = FontFamily.SansSerif,
                     color = TextSecondary.copy(alpha = 0.65f),
-                    lineHeight = 18.sp,
+                    lineHeight = 16.sp,
                     letterSpacing = 0.2.sp,
                     textAlign = TextAlign.Start,
                     maxLines = 1,

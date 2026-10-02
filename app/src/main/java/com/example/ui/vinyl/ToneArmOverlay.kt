@@ -2,12 +2,14 @@ package com.example.ui.vinyl
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -16,7 +18,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -26,11 +30,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.example.media.AlbumColorPalette
 import kotlinx.coroutines.launch
@@ -97,21 +104,21 @@ fun ToneArmOverlay(
 
         // ---------------------------------------------------------
         // Section 1: Turntable Geometry & Pivot Location
-        // Matching the primary reference image layout
+        // Matching the enlarged vinyl disc (85% display width)
         // ---------------------------------------------------------
-        val vinylCenterX = w * 0.39f
-        val vinylCenterY = h * 0.48f
+        val vinylCenterX = w * 0.44f
+        val vinylCenterY = h * 0.49f
         val vinylCenter = Offset(vinylCenterX, vinylCenterY)
 
-        val outerRadius = w * 0.41f
+        val outerRadius = w * 0.425f
         val outerGrooveRadius = outerRadius * 0.95f
-        val innerGrooveRadius = outerRadius * 0.52f
+        val innerGrooveRadius = outerRadius * 0.50f
 
-        val pivotX = w * 0.88f
+        val pivotX = w * 0.90f
         val pivotY = h * 0.16f
         val pivot = Offset(pivotX, pivotY)
 
-        val armLength = (w * 0.55f).coerceAtLeast(180f)
+        val armLength = (w * 0.56f).coerceAtLeast(180f)
 
         // ---------------------------------------------------------
         // Section 2: Rigorous Geometric Groove Angle Mapping
@@ -155,46 +162,124 @@ fun ToneArmOverlay(
         var isDragging by remember { mutableStateOf(false) }
         var isManualMode by remember { mutableStateOf(false) }
 
-        // Track playback position strictly when NOT in manual drag/snap mode
-        LaunchedEffect(hasActiveTrack, progress, isManualMode) {
-            if (!isManualMode && !isDragging) {
-                val targetAngle = if (hasActiveTrack) {
-                    angleForProgress(progress)
-                } else {
-                    parkedAngle
-                }
+        val currentProgressState = rememberUpdatedState(progress)
+        val currentHasActiveTrack = rememberUpdatedState(hasActiveTrack)
 
-                // If starting playback from parked rest cradle:
-                val wasParked = kotlin.math.abs(armAngleAnim.value - parkedAngle) < 0.04f
-                if (wasParked && hasActiveTrack) {
-                    // Smoothly rotate the arm directly toward the current song position
-                    armAngleAnim.animateTo(
-                        targetValue = targetAngle,
-                        animationSpec = tween(durationMillis = 480, easing = FastOutSlowInEasing)
-                    )
-                } else {
-                    // Direct deterministic groove tracking without drift
-                    armAngleAnim.animateTo(
-                        targetValue = targetAngle,
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMedium
-                        )
-                    )
-                }
+        // Keep parked position synchronized if layout dimensions settle
+        LaunchedEffect(parkedAngle) {
+            if (!hasActiveTrack && !isManualMode && !isDragging) {
+                armAngleAnim.snapTo(parkedAngle)
             }
         }
 
-        // Current physical head coordinates (calculated purely from pivot + cos/sin * length)
-        val currentAngle = armAngleAnim.value
-        val headX = pivot.x + cos(currentAngle) * armLength
-        val headY = pivot.y + sin(currentAngle) * armLength
-        val currentHead = Offset(headX, headY)
+        // Unified tonearm movement & deterministic playback tracking loop
+        LaunchedEffect(hasActiveTrack, isManualMode, isDragging) {
+            if (isManualMode || isDragging) return@LaunchedEffect
+
+            if (!hasActiveTrack) {
+                // Return smoothly to the parked rest cradle when playback is stopped / inactive
+                armAngleAnim.animateTo(
+                    targetValue = parkedAngle,
+                    animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing)
+                )
+            } else {
+                // Smoothly unpark from the rest cradle to current groove when playback starts
+                val currentAngle = armAngleAnim.value
+                val initialTarget = angleForProgress(currentProgressState.value)
+                val isNearPark = kotlin.math.abs(currentAngle - parkedAngle) < 0.08f
+                if (isNearPark) {
+                    armAngleAnim.animateTo(
+                        targetValue = initialTarget,
+                        animationSpec = tween(durationMillis = 480, easing = FastOutSlowInEasing)
+                    )
+                }
+
+                // Continuously track playback progress as music plays across the grooves
+                snapshotFlow { currentProgressState.value }
+                    .collect { currentProgress ->
+                        if (!isManualMode && !isDragging && currentHasActiveTrack.value) {
+                            val targetAngle = angleForProgress(currentProgress)
+                            val diff = kotlin.math.abs(targetAngle - armAngleAnim.value)
+                            if (diff > 0.0001f) {
+                                val duration = if (diff > 0.04f) 280 else 140
+                                armAngleAnim.animateTo(
+                                    targetValue = targetAngle,
+                                    animationSpec = tween(durationMillis = duration, easing = LinearEasing)
+                                )
+                            }
+                        }
+                    }
+            }
+        }
+
+        // ---------------------------------------------------------
+        // Section 5: Stationary Mount Base Plate (Rendered once, zero rotation)
+        // ---------------------------------------------------------
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawMountBasePlate(pivot, palette)
+        }
+
+        // ---------------------------------------------------------
+        // Section 6: Soft Decorative Contact Shadow (GPU-Accelerated)
+        // ---------------------------------------------------------
+        val density = LocalDensity.current
+        val shadowOffsetX = with(density) { 4.dp.toPx() - tiltX * 3.dp.toPx() }
+        val shadowOffsetY = with(density) { 6.dp.toPx() - tiltY * 3.dp.toPx() }
+        val shadowPivot = Offset(pivot.x + shadowOffsetX, pivot.y + shadowOffsetY)
+        val shadowPivotFracX = (shadowPivot.x / w).coerceIn(0.01f, 0.99f)
+        val shadowPivotFracY = (shadowPivot.y / h).coerceIn(0.01f, 0.99f)
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    transformOrigin = TransformOrigin(shadowPivotFracX, shadowPivotFracY)
+                    rotationZ = armAngleAnim.value * (180f / PI.toFloat())
+                }
+        ) {
+            drawSmallDecorativeShadowAtZero(
+                shadowPivot = shadowPivot,
+                armLength = armLength
+            )
+        }
+
+        // ---------------------------------------------------------
+        // Section 7-9: Rotating Tonearm Assembly (GPU-Accelerated)
+        // Pre-rendered at reference angle 0; rotated strictly by GPU hardware RenderNode
+        // ---------------------------------------------------------
+        val pivotFracX = (pivot.x / w).coerceIn(0.01f, 0.99f)
+        val pivotFracY = (pivot.y / h).coerceIn(0.01f, 0.99f)
+
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    transformOrigin = TransformOrigin(pivotFracX, pivotFracY)
+                    rotationZ = armAngleAnim.value * (180f / PI.toFloat())
+                }
+        ) {
+            // Rigid arm wand extending horizontally at reference angle 0
+            drawRigidArmWandAtZero(
+                pivot = pivot,
+                armLength = armLength
+            )
+
+            // Top-down cartridge at the end of the wand
+            drawRectangularCartridgeAtZero(
+                head = Offset(pivot.x + armLength, pivot.y),
+                palette = palette
+            )
+
+            // Gimbal pivot bearing and counterweight
+            drawGimbalAssemblyAtZero(
+                pivot = pivot
+            )
+        }
 
         // ---------------------------------------------------------
         // Section 4: Gesture Handling — Touch, Drag & Release
         // ---------------------------------------------------------
-        Canvas(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(pivot, armLength, minValidAngle, maxValidAngle, outerGrooveRadius, innerGrooveRadius) {
@@ -202,9 +287,15 @@ fun ToneArmOverlay(
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val touchPos = down.position
 
+                        // Current physical head coordinates calculated at touch time
+                        val curAngle = armAngleAnim.value
+                        val headX = pivot.x + cos(curAngle) * armLength
+                        val headY = pivot.y + sin(curAngle) * armLength
+                        val currentHead = Offset(headX, headY)
+
                         // Hit test: did the user touch anywhere along the arm or cartridge?
                         val hitDist = distanceToSegment(touchPos, pivot, currentHead)
-                        if (hitDist <= 64.dp.toPx()) {
+                        if (hitDist <= 28.dp.toPx()) {
                             down.consume()
                             isDragging = true
                             isManualMode = true
@@ -283,50 +374,7 @@ fun ToneArmOverlay(
                         }
                     }
                 }
-        ) {
-            // ---------------------------------------------------------
-            // Section 5: Stationary Mount Base Plate
-            // ---------------------------------------------------------
-            drawMountBasePlate(pivot, palette)
-
-            // ---------------------------------------------------------
-            // Section 6: Small, Soft Decorative Contact Shadow
-            // Shifted slightly for depth; NEVER used in calculations
-            // ---------------------------------------------------------
-            drawSmallDecorativeShadow(
-                pivot = pivot,
-                angle = currentAngle,
-                armLength = armLength,
-                tiltX = tiltX,
-                tiltY = tiltY
-            )
-
-            // ---------------------------------------------------------
-            // Section 7: Rotating Rigid Arm Wand
-            // ---------------------------------------------------------
-            drawRigidArmWand(
-                pivot = pivot,
-                head = currentHead
-            )
-
-            // ---------------------------------------------------------
-            // Section 8: Realistic Top-Down Cartridge Rectangle
-            // Attached strictly to the END of the arm (currentHead)
-            // ---------------------------------------------------------
-            drawRectangularCartridge(
-                head = currentHead,
-                armAngle = currentAngle,
-                palette = palette
-            )
-
-            // ---------------------------------------------------------
-            // Section 9: Gimbal Pivot Bearing & Counterweight
-            // ---------------------------------------------------------
-            drawGimbalAssembly(
-                pivot = pivot,
-                armAngle = currentAngle
-            )
-        }
+        )
     }
 }
 
@@ -397,6 +445,192 @@ private fun DrawScope.drawMountBasePlate(
         topLeft = Offset(pivot.x - 9.dp.toPx(), cradleY - 3.5.dp.toPx()),
         size = Size(18.dp.toPx(), 7.dp.toPx()),
         cornerRadius = CornerRadius(2.5.dp.toPx(), 2.5.dp.toPx())
+    )
+}
+
+/**
+ * Draws small, soft decorative contact shadow at reference angle 0 for GPU hardware rotation.
+ */
+private fun DrawScope.drawSmallDecorativeShadowAtZero(
+    shadowPivot: Offset,
+    armLength: Float
+) {
+    val shadowHead = Offset(shadowPivot.x + armLength, shadowPivot.y)
+
+    // Wand shadow
+    drawLine(
+        color = Color(0x35000000),
+        start = shadowPivot,
+        end = shadowHead,
+        strokeWidth = 6.dp.toPx(),
+        cap = StrokeCap.Round
+    )
+
+    // Cartridge shadow
+    val cartAngle = 22f
+    val cartW = 14.dp.toPx()
+    val cartH = 28.dp.toPx()
+
+    rotate(degrees = cartAngle, pivot = shadowHead) {
+        drawRoundRect(
+            color = Color(0x40000000),
+            topLeft = Offset(shadowHead.x - cartW / 2f, shadowHead.y - cartH / 2f),
+            size = Size(cartW, cartH),
+            cornerRadius = CornerRadius(3.dp.toPx(), 3.dp.toPx())
+        )
+    }
+}
+
+/**
+ * Draws the rigid cylindrical dark graphite tonearm wand at reference angle 0 for GPU hardware rotation.
+ */
+private fun DrawScope.drawRigidArmWandAtZero(
+    pivot: Offset,
+    armLength: Float
+) {
+    val wandWidth = 10.dp.toPx()
+    val head = Offset(pivot.x + armLength, pivot.y)
+
+    // 1. Dark cylindrical graphite rod body with substantial thickness
+    drawLine(
+        brush = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF383840),
+                Color(0xFF24242A),
+                Color(0xFF161619)
+            ),
+            start = Offset(pivot.x, pivot.y - wandWidth / 2f),
+            end = Offset(pivot.x, pivot.y + wandWidth / 2f)
+        ),
+        start = pivot,
+        end = head,
+        strokeWidth = wandWidth,
+        cap = StrokeCap.Round
+    )
+
+    // 2. Crisp specular highlight line along the arm length
+    drawLine(
+        color = Color(0x48FFFFFF),
+        start = Offset(pivot.x, pivot.y - 1.5.dp.toPx()),
+        end = Offset(head.x, head.y - 1.5.dp.toPx()),
+        strokeWidth = 1.5.dp.toPx(),
+        cap = StrokeCap.Round
+    )
+}
+
+/**
+ * Draws the realistic top-down rectangular cartridge at reference angle 0 for GPU hardware rotation.
+ */
+private fun DrawScope.drawRectangularCartridgeAtZero(
+    head: Offset,
+    palette: AlbumColorPalette
+) {
+    val cartAngleDeg = 22f
+    val cartW = 22.dp.toPx()
+    val cartH = 46.dp.toPx()
+
+    rotate(degrees = cartAngleDeg, pivot = head) {
+        val rectTopLeft = Offset(head.x - cartW / 2f, head.y - cartH / 2f)
+
+        // 1. Main rectangular cartridge body: dark graphite (#1C1C20)
+        drawRoundRect(
+            color = Color(0xFF1C1C20),
+            topLeft = rectTopLeft,
+            size = Size(cartW, cartH),
+            cornerRadius = CornerRadius(3.5.dp.toPx(), 3.5.dp.toPx())
+        )
+
+        // 2. Chamfered metallic edge bevel
+        drawRoundRect(
+            color = Color(0x35FFFFFF),
+            topLeft = rectTopLeft,
+            size = Size(cartW, cartH),
+            cornerRadius = CornerRadius(3.5.dp.toPx(), 3.5.dp.toPx()),
+            style = Stroke(width = 1.2.dp.toPx())
+        )
+
+        // 3. Center alignment stripe on cartridge top (tinted with album accent)
+        drawLine(
+            color = palette.dominantTint.copy(alpha = 0.85f),
+            start = Offset(head.x, rectTopLeft.y + 5.dp.toPx()),
+            end = Offset(head.x, rectTopLeft.y + cartH - 5.dp.toPx()),
+            strokeWidth = 2.dp.toPx()
+        )
+
+        // 4. Stylus needle indicator dot at the front edge of the cartridge
+        drawCircle(
+            color = Color(0xFFE4E4E8),
+            radius = 2.4.dp.toPx(),
+            center = Offset(head.x, rectTopLeft.y + cartH - 2.5.dp.toPx())
+        )
+
+        // 5. Stylus diamond tip highlight
+        drawCircle(
+            color = Color(0xFFFFFFFF),
+            radius = 1.2.dp.toPx(),
+            center = Offset(head.x, rectTopLeft.y + cartH - 2.5.dp.toPx())
+        )
+    }
+}
+
+/**
+ * Draws the gimbal pivot bearing, counterweight, and center cap jewel at reference angle 0 for GPU hardware rotation.
+ */
+private fun DrawScope.drawGimbalAssemblyAtZero(
+    pivot: Offset
+) {
+    // 1. Counterweight extending behind the pivot (angle = 180 degrees)
+    val counterDist = 24.dp.toPx()
+    val counterCenter = Offset(pivot.x - counterDist, pivot.y)
+
+    // Counterweight stub
+    drawLine(
+        color = Color(0xFF28282E),
+        start = pivot,
+        end = counterCenter,
+        strokeWidth = 5.dp.toPx(),
+        cap = StrokeCap.Round
+    )
+
+    // Counterweight cylinder
+    val cwRadius = 11.dp.toPx()
+    drawCircle(
+        color = Color(0xFF323238),
+        radius = cwRadius,
+        center = counterCenter
+    )
+    drawCircle(
+        color = Color(0x40FFFFFF),
+        radius = cwRadius,
+        center = counterCenter,
+        style = Stroke(width = 1.dp.toPx())
+    )
+
+    // 2. Gimbal bearing housing at pivot
+    val gimbalRadius = 15.dp.toPx()
+    drawCircle(
+        color = Color(0xFF24242A),
+        radius = gimbalRadius,
+        center = pivot
+    )
+    drawCircle(
+        color = Color(0x35FFFFFF),
+        radius = gimbalRadius,
+        center = pivot,
+        style = Stroke(width = 1.2.dp.toPx())
+    )
+
+    // 3. Top metallic jewel cap
+    drawCircle(
+        color = Color(0xFF141416),
+        radius = 5.5.dp.toPx(),
+        center = pivot
+    )
+    drawCircle(
+        color = Color(0x55FFFFFF),
+        radius = 4.dp.toPx(),
+        center = pivot,
+        style = Stroke(width = 0.8.dp.toPx())
     )
 }
 

@@ -4,21 +4,23 @@ import android.app.Application
 import android.content.Context
 import android.media.AudioManager
 import android.os.Build
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.view.Choreographer
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.media.MediaBridgeManager
 import com.example.media.NowPlayingState
 import com.example.media.VinylNotificationListenerService
+import com.example.media.VinylSoundEngine
 import com.example.sensor.DeviceTiltSensor
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -62,6 +64,7 @@ class VinylPlayerViewModel(application: Application) : AndroidViewModel(applicat
 
     private val mediaBridge = MediaBridgeManager.getInstance(application)
     private val tiltSensor = DeviceTiltSensor(application)
+    private val vinylSoundEngine = VinylSoundEngine.getInstance(application)
 
     // Direct stream of media session playback state
     val nowPlayingState: StateFlow<NowPlayingState> = mediaBridge.state
@@ -70,6 +73,8 @@ class VinylPlayerViewModel(application: Application) : AndroidViewModel(applicat
     val tiltState: StateFlow<Pair<Float, Float>> = tiltSensor.tilt
 
     // Rotational physics state
+    val rotationAngle = mutableFloatStateOf(0.0f)
+
     private val _currentAngle = MutableStateFlow(0.0f)
     val currentAngle: StateFlow<Float> = _currentAngle.asStateFlow()
 
@@ -93,6 +98,15 @@ class VinylPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _toneArmProgress = MutableStateFlow(0.0f)
     val toneArmProgress: StateFlow<Float> = _toneArmProgress.asStateFlow()
 
+    // Vinyl Touch Gestures & Physical Feedback
+    private val _swipeDirection = MutableStateFlow(0) // -1 for Up (Next), +1 for Down (Previous)
+    val swipeDirection: StateFlow<Int> = _swipeDirection.asStateFlow()
+
+    private val _swipeTrigger = MutableStateFlow(0L)
+    val swipeTrigger: StateFlow<Long> = _swipeTrigger.asStateFlow()
+
+    private val _transientOmegaBoost = MutableStateFlow(0.0f)
+
     // Physical haptics vibrator
     private val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         val manager = application.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
@@ -102,17 +116,122 @@ class VinylPlayerViewModel(application: Application) : AndroidViewModel(applicat
         application.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     }
 
+    // Physical simulation state (zero allocations in frame loop)
+    private var isPhysicsRunning = false
+    private var lastTimeNanos = 0L
+    private var currentTheta = 0.0f
+    private var currentOmega = 0.0f
+    private val spinUpAcceleration = 340.0f // deg / s^2 (takes ~0.6s to reach 200 deg/s)
+    private val frictionDecayRate = 1.6f     // exponential deceleration damping factor
+
+    private val physicsFrameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            val isPlaying = nowPlayingState.value.isPlaying
+            val targetOmega = if (isPlaying) _rpmMode.value.targetDegreesPerSecond else 0.0f
+            val hasBoost = _transientOmegaBoost.value > 0.0f
+
+            if (currentOmega > 0.0f || isPlaying || hasBoost) {
+                if (lastTimeNanos == 0L) {
+                    lastTimeNanos = frameTimeNanos
+                }
+                val deltaSeconds = ((frameTimeNanos - lastTimeNanos) / 1_000_000_000.0f).coerceIn(0.001f, 0.035f)
+                lastTimeNanos = frameTimeNanos
+
+                val boost = _transientOmegaBoost.value
+                if (boost > 0.0f) {
+                    currentOmega = (currentOmega + boost).coerceAtMost(360.0f)
+                    _transientOmegaBoost.value = 0.0f
+                }
+
+                if (isPlaying) {
+                    if (currentOmega < targetOmega) {
+                        currentOmega = (currentOmega + spinUpAcceleration * deltaSeconds).coerceAtMost(targetOmega)
+                    } else if (currentOmega > targetOmega) {
+                        currentOmega = (currentOmega - spinUpAcceleration * deltaSeconds).coerceAtLeast(targetOmega)
+                    }
+                } else {
+                    currentOmega *= (1.0f - frictionDecayRate * deltaSeconds).coerceIn(0.0f, 1.0f)
+                    if (currentOmega < 0.5f) {
+                        currentOmega = 0.0f
+                    }
+                }
+
+                currentTheta = (currentTheta + currentOmega * deltaSeconds) % 360.0f
+                rotationAngle.floatValue = currentTheta
+                if (_currentAngle.value != currentTheta) {
+                    _currentAngle.value = currentTheta
+                }
+                if (_currentAngularVelocity.value != currentOmega) {
+                    _currentAngularVelocity.value = currentOmega
+                }
+
+                // Continuously post next VSYNC frame without any object allocation
+                Choreographer.getInstance().postFrameCallback(this)
+            } else {
+                lastTimeNanos = 0L
+                if (_currentAngularVelocity.value > 0.0f) {
+                    _currentAngularVelocity.value = 0.0f
+                }
+                isPhysicsRunning = false
+            }
+        }
+    }
+
+    private fun ensurePhysicsRunning() {
+        if (!isPhysicsRunning) {
+            isPhysicsRunning = true
+            lastTimeNanos = 0L
+            Choreographer.getInstance().postFrameCallback(physicsFrameCallback)
+        }
+    }
+
     init {
         // Start device tilt sensor
         tiltSensor.start()
 
-        // Launch the continuous physics integration loop
-        startPhysicsSimulationLoop()
+        // Launch observers to awaken the zero-allocation physics loop on state changes
+        // and trigger the subtle pre-playback needle contact sound on playback transition
+        viewModelScope.launch {
+            var wasPlaying = false
+            var lastTrackIdentity = ""
+
+            nowPlayingState.collect { state ->
+                val currentTrackIdentity = "${state.title}|${state.artist}"
+                val isNowPlaying = state.isPlaying && !state.isEmpty
+
+                if (isNowPlaying) {
+                    ensurePhysicsRunning()
+                    val isTrackTransition = wasPlaying && currentTrackIdentity.isNotEmpty() && currentTrackIdentity != lastTrackIdentity
+                    val isResume = !wasPlaying
+
+                    if (isTrackTransition || isResume) {
+                        vinylSoundEngine.playNeedleContactSound()
+                    }
+                }
+
+                wasPlaying = state.isPlaying
+                if (state.title.isNotEmpty()) {
+                    lastTrackIdentity = currentTrackIdentity
+                }
+            }
+        }
+        viewModelScope.launch {
+            _rpmMode.collect {
+                if (nowPlayingState.value.isPlaying) {
+                    ensurePhysicsRunning()
+                }
+            }
+        }
+
+        // Initial launch check
+        ensurePhysicsRunning()
     }
 
     override fun onCleared() {
         super.onCleared()
         tiltSensor.stop()
+        Choreographer.getInstance().removeFrameCallback(physicsFrameCallback)
+        vinylSoundEngine.release()
     }
 
     /**
@@ -121,6 +240,9 @@ class VinylPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun onResume() {
         tiltSensor.start()
         mediaBridge.checkAndRefresh()
+        if (nowPlayingState.value.isPlaying || currentOmega > 0f) {
+            ensurePhysicsRunning()
+        }
     }
 
     /**
@@ -130,83 +252,74 @@ class VinylPlayerViewModel(application: Application) : AndroidViewModel(applicat
         tiltSensor.stop()
     }
 
-    /**
-     * Physical Rotational Simulation Loop
-     *
-     * Numerically integrates angular acceleration and friction decay.
-     * When stationary, throttles to low frequency to eliminate CPU/battery waste.
-     */
-    private fun startPhysicsSimulationLoop() {
-        viewModelScope.launch(Dispatchers.Default) {
-            var lastTimeNanos = System.nanoTime()
-            var currentTheta = 0.0f
-            var currentOmega = 0.0f
-
-            // Physical constants
-            val spinUpAcceleration = 340.0f // deg / s^2 (takes ~0.6s to reach 200 deg/s)
-            val frictionDecayRate = 1.6f     // exponential deceleration damping factor
-
-            while (isActive) {
-                val nowNanos = System.nanoTime()
-                val deltaSeconds = ((nowNanos - lastTimeNanos) / 1_000_000_000.0f).coerceIn(0.001f, 0.05f)
-                lastTimeNanos = nowNanos
-
-                val isPlaying = nowPlayingState.value.isPlaying
-                val targetOmega = if (isPlaying) _rpmMode.value.targetDegreesPerSecond else 0.0f
-
-                if (isPlaying) {
-                    if (currentOmega < targetOmega) {
-                        currentOmega = (currentOmega + spinUpAcceleration * deltaSeconds).coerceAtMost(targetOmega)
-                    } else if (currentOmega > targetOmega) {
-                        currentOmega = (currentOmega - spinUpAcceleration * deltaSeconds).coerceAtLeast(targetOmega)
-                    }
-                } else {
-                    // Exponential deceleration simulating bearing and belt friction
-                    currentOmega *= (1.0f - frictionDecayRate * deltaSeconds).coerceIn(0.0f, 1.0f)
-                    if (currentOmega < 0.5f) {
-                        currentOmega = 0.0f
-                    }
-                }
-
-                // If rotating, update continuous angle
-                if (currentOmega > 0.0f || isPlaying) {
-                    currentTheta = (currentTheta + currentOmega * deltaSeconds) % 360.0f
-                    _currentAngle.value = currentTheta
-                    _currentAngularVelocity.value = currentOmega
-                } else if (_currentAngularVelocity.value > 0.0f) {
-                    _currentAngularVelocity.value = 0.0f
-                }
-
-                // Update tone arm tracking progress directly from normalized song completion percentage
-                val state = nowPlayingState.value
-                val effectivePos = _optimisticSeekPositionMs.value ?: state.calculateCurrentPositionMs()
-                val progress = if (state.durationMs > 0L) {
-                    (effectivePos.toFloat() / state.durationMs.toFloat()).coerceIn(0.0f, 1.0f)
-                } else {
-                    0.0f
-                }
-                _toneArmProgress.value = progress
-
-                // Sleep: 16ms (~60 FPS) when rotating, 100ms when idle to conserve battery
-                if (currentOmega > 0.0f || isPlaying) {
-                    delay(16L)
-                } else {
-                    delay(100L)
-                }
-            }
-        }
-    }
-
     // ==========================================
     // Tactile Hardware Controls
     // ==========================================
 
     /**
+     * Touching/tapping the physical vinyl disc:
+     * If currently playing -> immediately pause playback.
+     * If currently paused -> remain paused (never resume).
+     */
+    fun onVinylTapped() {
+        if (nowPlayingState.value.isPlaying) {
+            triggerTactileHaptic()
+            mediaBridge.pause()
+        }
+    }
+
+    /**
+     * Swiping UP on the physical vinyl disc (deltaY < -80dp):
+     * Triggers next track with a physical rotational acceleration and feedback animation.
+     */
+    fun onVinylSwipeUp() {
+        triggerTactileHaptic()
+        _swipeDirection.value = -1
+        _swipeTrigger.value = SystemClock.uptimeMillis()
+        _transientOmegaBoost.value = 85.0f
+        ensurePhysicsRunning()
+        mediaBridge.skipToNext()
+    }
+
+    /**
+     * Swiping DOWN on the physical vinyl disc (deltaY > +80dp):
+     * Triggers previous track with a physical rotational acceleration and feedback animation.
+     */
+    fun onVinylSwipeDown() {
+        triggerTactileHaptic()
+        _swipeDirection.value = 1
+        _swipeTrigger.value = SystemClock.uptimeMillis()
+        _transientOmegaBoost.value = 85.0f
+        ensurePhysicsRunning()
+        mediaBridge.skipToPrevious()
+    }
+
+    /**
      * Toggles playback between Play and Pause with tactile haptic feedback.
+     * When starting/resuming playback, immediately fires the subtle needle-contact SFX.
      */
     fun onPlayPauseClicked() {
         triggerTactileHaptic()
+        if (!nowPlayingState.value.isPlaying) {
+            vinylSoundEngine.playNeedleContactSound()
+        }
         mediaBridge.togglePlayPause()
+    }
+
+    /**
+     * Called when the user physically touches and drags on the vinyl platter.
+     * Modulates subtle organic vinyl rubbing/scratching noise according to drag velocity.
+     */
+    fun onPlatterMoved(velocityPxPerSec: Float) {
+        vinylSoundEngine.onPlatterMovement(velocityPxPerSec)
+    }
+
+    /**
+     * Called when manual platter interaction ends.
+     * Immediately terminates scratch audio without trailing noise.
+     */
+    fun onPlatterTouchEnded() {
+        vinylSoundEngine.onPlatterMovementStopped()
     }
 
     /**

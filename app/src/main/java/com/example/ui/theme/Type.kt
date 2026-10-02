@@ -2,9 +2,24 @@ package com.example.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.example.R
+
+/**
+ * Editorial display font family inspired by TAN Nimbus:
+ * high-fashion, retro-modern display serif with soft organic curves,
+ * elegant proportions, and distinctive serif structure.
+ * Statically loaded once and cached as an application-wide font asset.
+ */
+val EditorialDisplayFontFamily = FontFamily(
+    Font(R.font.fraunces, FontWeight.Normal),
+    Font(R.font.fraunces, FontWeight.Medium),
+    Font(R.font.fraunces, FontWeight.SemiBold),
+    Font(R.font.fraunces, FontWeight.Bold)
+)
 
 /**
  * Vinyl Typography System

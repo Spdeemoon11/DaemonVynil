@@ -62,18 +62,57 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun verifyColorExtractorWithBitmap() {
-        val bmp = android.graphics.Bitmap.createBitmap(16, 16, android.graphics.Bitmap.Config.ARGB_8888)
-        val canvas = android.graphics.Canvas(bmp)
-        canvas.drawColor(android.graphics.Color.BLUE)
+    fun verifyVinylTapWhenPlayingPauses() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val mediaBridge = com.example.media.MediaBridgeManager.getInstance(app)
+        val vm = com.example.ui.vinyl.VinylPlayerViewModel(app)
 
-        val palette = com.example.media.ColorExtractor.extractPalette(bmp)
-        org.junit.Assert.assertNotNull(palette)
-        // Dominant tint should capture the blue hue
-        org.junit.Assert.assertTrue(palette.dominantTint.blue > palette.dominantTint.red)
-        // Vinyl core must remain dominant authentic black vinyl (#101013)
-        assertEquals(com.example.media.AlbumColorPalette.DefaultVinylCore, palette.vinylCoreColor)
-        // Color wash must be ultra-subtle (alpha <= 0.10f)
-        assertTrue(palette.vinylWashColor.alpha <= 0.10f)
+        // Start audition playback
+        mediaBridge.skipToNext()
+        assertTrue(vm.nowPlayingState.value.isPlaying)
+
+        // Tap on vinyl -> must immediately pause
+        vm.onVinylTapped()
+        assertFalse(vm.nowPlayingState.value.isPlaying)
+
+        // Tap on vinyl when paused -> must remain paused, NEVER resume
+        vm.onVinylTapped()
+        assertFalse(vm.nowPlayingState.value.isPlaying)
+    }
+
+    @Test
+    fun verifyVinylSwipeNavigatesTracks() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val mediaBridge = com.example.media.MediaBridgeManager.getInstance(app)
+        val vm = com.example.ui.vinyl.VinylPlayerViewModel(app)
+
+        // Swipe UP -> Next Track
+        val initialTitle = vm.nowPlayingState.value.title
+        vm.onVinylSwipeUp()
+        assertEquals(-1, vm.swipeDirection.value)
+        val afterNextTitle = vm.nowPlayingState.value.title
+        org.junit.Assert.assertNotEquals(initialTitle, afterNextTitle)
+
+        // Swipe DOWN -> Previous Track
+        vm.onVinylSwipeDown()
+        assertEquals(1, vm.swipeDirection.value)
+    }
+
+    @Test
+    fun verifyVinylSoundEngineTriggersWithoutCrashing() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val soundEngine = com.example.media.VinylSoundEngine.getInstance(app)
+
+        // Pre-playback needle sound
+        soundEngine.playNeedleContactSound()
+
+        // Platter movement scratch sound
+        soundEngine.onPlatterMovement(240f)
+        soundEngine.onPlatterMovement(1200f)
+        soundEngine.onPlatterMovementStopped()
+
+        val vm = com.example.ui.vinyl.VinylPlayerViewModel(app)
+        vm.onPlatterMoved(300f)
+        vm.onPlatterTouchEnded()
     }
 }

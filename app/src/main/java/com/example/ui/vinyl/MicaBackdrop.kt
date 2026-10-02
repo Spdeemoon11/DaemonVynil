@@ -36,8 +36,9 @@ import kotlin.random.Random
 @Composable
 fun MicaBackdrop(
     palette: AlbumColorPalette,
-    tiltX: Float,
-    tiltY: Float,
+    tiltX: Float = 0f,
+    tiltY: Float = 0f,
+    tiltProvider: () -> Pair<Float, Float> = { Pair(tiltX, tiltY) },
     modifier: Modifier = Modifier
 ) {
     // Precomputed normalized grain points to prevent OLED banding (computed once)
@@ -115,8 +116,9 @@ fun MicaBackdrop(
         }
 
         Canvas(modifier = Modifier.fillMaxSize()) {
-            // 1. BASE DARK CHASSIS VOID
+            // 1. BASE DARK CHASSIS VOID WITH 23% PRIMARY ACCENT OVERLAY
             drawRect(color = Color(0xFF060608))
+            drawRect(color = palette.dominantTint.copy(alpha = 0.23f))
 
             // 2. DEFOCUSED AMBIENT BACKGROUND BLOBS (Shifts gently with device tilt)
             val parallaxX = tiltX * 20.dp.toPx()

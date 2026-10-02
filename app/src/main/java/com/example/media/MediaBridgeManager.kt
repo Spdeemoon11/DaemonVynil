@@ -318,53 +318,79 @@ class MediaBridgeManager private constructor(private val context: Context) {
 
     /**
      * Toggles playback between Play and Pause on the active media session.
+     * Gracefully falls back to built-in turntable tracks when no external player is connected.
      */
     fun togglePlayPause() {
-        if (_state.value.isAuditionMode) {
-            toggleAuditionPlayPause()
-            return
-        }
-
-        val controller = activeController ?: return
-        val isCurrentlyPlaying = _state.value.isPlaying
-        try {
-            if (isCurrentlyPlaying) {
-                controller.transportControls.pause()
-            } else {
-                controller.transportControls.play()
+        val controller = activeController
+        if (controller != null && !_state.value.isAuditionMode) {
+            val isCurrentlyPlaying = _state.value.isPlaying
+            try {
+                if (isCurrentlyPlaying) {
+                    controller.transportControls.pause()
+                } else {
+                    controller.transportControls.play()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to toggle play/pause", e)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to toggle play/pause", e)
+        } else {
+            toggleAuditionPlayPause()
+        }
+    }
+
+    /**
+     * Pauses playback if currently playing. Never resumes if already paused.
+     */
+    fun pause() {
+        val controller = activeController
+        if (controller != null && !_state.value.isAuditionMode) {
+            if (_state.value.isPlaying) {
+                try {
+                    controller.transportControls.pause()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to pause", e)
+                }
+            }
+        } else {
+            if (_state.value.isPlaying) {
+                toggleAuditionPlayPause()
+            }
         }
     }
 
     /**
      * Skips to the next track on the active media session.
+     * Falls back to built-in tracks when no external player is connected.
      */
     fun skipToNext() {
-        if (_state.value.isAuditionMode) {
+        val controller = activeController
+        if (controller != null && !_state.value.isAuditionMode) {
+            try {
+                controller.transportControls.skipToNext()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to skip to next", e)
+                skipAuditionTrack(forward = true)
+            }
+        } else {
             skipAuditionTrack(forward = true)
-            return
-        }
-        try {
-            activeController?.transportControls?.skipToNext()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to skip to next", e)
         }
     }
 
     /**
      * Skips to the previous track on the active media session.
+     * Falls back to built-in tracks when no external player is connected.
      */
     fun skipToPrevious() {
-        if (_state.value.isAuditionMode) {
+        val controller = activeController
+        if (controller != null && !_state.value.isAuditionMode) {
+            try {
+                controller.transportControls.skipToPrevious()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to skip to previous", e)
+                skipAuditionTrack(forward = false)
+            }
+        } else {
             skipAuditionTrack(forward = false)
-            return
-        }
-        try {
-            activeController?.transportControls?.skipToPrevious()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to skip to previous", e)
         }
     }
 
@@ -412,11 +438,19 @@ class MediaBridgeManager private constructor(private val context: Context) {
         val now = SystemClock.elapsedRealtime()
         val currentPos = current.calculateCurrentPositionMs()
 
-        val updated = current.copy(
-            isPlaying = !current.isPlaying,
-            positionMs = currentPos,
-            lastPositionUpdateTime = now
-        )
+        val updated = if (current.isEmpty || current.title == "Nothing Playing") {
+            NowPlayingState.SampleAudition.copy(
+                isPlaying = true,
+                lastPositionUpdateTime = now
+            )
+        } else {
+            current.copy(
+                isPlaying = !current.isPlaying,
+                positionMs = currentPos,
+                lastPositionUpdateTime = now,
+                isAuditionMode = true
+            )
+        }
         auditionState = updated
         _state.value = updated
     }
@@ -430,7 +464,7 @@ class MediaBridgeManager private constructor(private val context: Context) {
         )
 
         val currentTitle = _state.value.title
-        val currentIndex = sampleTracks.indexOfFirst { it.first == currentTitle }.coerceAtLeast(0)
+        val currentIndex = sampleTracks.indexOfFirst { it.first == currentTitle }.let { if (it < 0) 0 else it }
         val nextIndex = if (forward) {
             (currentIndex + 1) % sampleTracks.size
         } else {
@@ -445,7 +479,8 @@ class MediaBridgeManager private constructor(private val context: Context) {
             positionMs = 0L,
             durationMs = 384_000L,
             isPlaying = true,
-            lastPositionUpdateTime = SystemClock.elapsedRealtime()
+            lastPositionUpdateTime = SystemClock.elapsedRealtime(),
+            isAuditionMode = true
         )
         auditionState = updated
         _state.value = updated

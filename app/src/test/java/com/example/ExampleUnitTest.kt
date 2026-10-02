@@ -82,4 +82,58 @@ class ExampleUnitTest {
         assertEquals("Vinyl core must be authentic black vinyl", AlbumColorPalette.DefaultVinylCore, bluePalette.vinylCoreColor)
         assertTrue("Color wash must be ultra-subtle (alpha <= 0.06f)", bluePalette.vinylWashColor.alpha <= 0.06f)
     }
+
+    @Test
+    fun cleanDisplayTrackTitle_removesParentheticalContentAndCleansSpacing() {
+        // 1. Single parenthetical suffix
+        assertEquals(
+            "Jaana Samjho Na",
+            com.example.ui.vinyl.cleanDisplayTrackTitle("Jaana Samjho Na (From Bhool Bhulaiyaa 3)")
+        )
+        assertEquals(
+            "Song Name",
+            com.example.ui.vinyl.cleanDisplayTrackTitle("Song Name (Official Audio)")
+        )
+        assertEquals(
+            "Song Name",
+            com.example.ui.vinyl.cleanDisplayTrackTitle("Song Name (Remastered 2025)")
+        )
+
+        // 2. Multiple parenthetical sections
+        assertEquals(
+            "Track Name",
+            com.example.ui.vinyl.cleanDisplayTrackTitle("Track Name (Remastered) (2025 Edition)")
+        )
+        assertEquals(
+            "Track Name",
+            com.example.ui.vinyl.cleanDisplayTrackTitle("Track Name (Live) (Official Audio)")
+        )
+        assertEquals(
+            "Song Name",
+            com.example.ui.vinyl.cleanDisplayTrackTitle("Song Name (Official Audio) (Remastered)")
+        )
+
+        // 3. Nested parentheses
+        assertEquals(
+            "Song Name",
+            com.example.ui.vinyl.cleanDisplayTrackTitle("Song Name (feat. Artist (Remix))")
+        )
+
+        // 4. Dangling punctuation & whitespace cleanup
+        assertEquals(
+            "Track Name",
+            com.example.ui.vinyl.cleanDisplayTrackTitle("Track Name - (Remastered)")
+        )
+        assertEquals(
+            "Spaced Out Song",
+            com.example.ui.vinyl.cleanDisplayTrackTitle("   Spaced Out Song   (Extra Info)   ")
+        )
+
+        // 5. Clean titles without parentheses remain untouched
+        assertEquals(
+            "Aja",
+            com.example.ui.vinyl.cleanDisplayTrackTitle("Aja")
+        )
+    }
 }
+

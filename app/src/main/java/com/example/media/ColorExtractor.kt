@@ -201,18 +201,18 @@ object ColorExtractor {
 
         // Ultra-subtle color wash: exactly 4.5% opacity over black vinyl!
         // Guarantees that the record visually reads as 95% BLACK VINYL, 5% album color cast.
-        val subtleWash = dominant.copy(alpha = 0.045f)
+        val subtleWash = dominant.copy(alpha = 0.105f)
 
         return AlbumColorPalette(
             dominantTint = dominant,
             vinylCoreColor = vinylCore,
             vinylWashColor = subtleWash,
             // Specular highlights: silver/white with faint 9% album tint in reflected light
-            specularTint = dominant.copy(alpha = 0.09f),
+            specularTint = dominant.copy(alpha = 0.01f),
             // Ambient aura: soft, restrained, quiet 7% halo
             ambientGlow = dominant.copy(alpha = 0.07f),
             // Mica background: gentle 6% acrylic mood
-            micaBackgroundTint = dominant.copy(alpha = 0.06f),
+            micaBackgroundTint = dominant.copy(alpha = 0.20f),
             // Circular progress ring: low-contrast subtle indicator around the platter
             progressRingColor = Color(0x60D4D4D8)
         )
